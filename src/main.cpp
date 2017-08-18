@@ -271,10 +271,13 @@ int main() {
                 if((check_car_s > car_s) && ((check_car_s - car_s) < 30)){
                   //ref_vel = 29.5; 
                   too_close = true;
-                  if(lane > 0){
+                  if(lane == 0 || lane == 2){
+                    lane = 1;
+                  } else{
                     lane = 0;
-                  } //end lane change
+                    // add logic to choose lane
 
+                  }
                 } //end too close
               } //end in my lane
             } //end for loop around sensed vehicles
