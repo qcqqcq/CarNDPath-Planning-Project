@@ -8,6 +8,7 @@
 #include "Eigen-3.3/Eigen/Core"
 #include "Eigen-3.3/Eigen/QR"
 #include "json.hpp"
+#include "spline.h"
 
 using namespace std;
 
@@ -160,6 +161,7 @@ vector<double> getXY(double s, double d, vector<double> maps_s, vector<double> m
 }
 
 int main() {
+
   uWS::Hub h;
 
   // Load up map values for waypoint's x,y,s and d normalized normal vectors
@@ -196,7 +198,12 @@ int main() {
   	map_waypoints_dy.push_back(d_y);
   }
 
-  h.onMessage([&map_waypoints_x,&map_waypoints_y,&map_waypoints_s,&map_waypoints_dx,&map_waypoints_dy](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
+    
+  // Vehicle initial states
+  double ref_vel = 0; //mph
+  int lane = 1;
+
+  h.onMessage([&lane,&ref_vel,&map_waypoints_x,&map_waypoints_y,&map_waypoints_s,&map_waypoints_dx,&map_waypoints_dy](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
                      uWS::OpCode opCode) {
     // "42" at the start of the message means there's a websocket message event.
     // The 4 signifies a websocket message
@@ -226,12 +233,59 @@ int main() {
           	// Previous path data given to the Planner
           	auto previous_path_x = j[1]["previous_path_x"];
           	auto previous_path_y = j[1]["previous_path_y"];
+            int prev_size = previous_path_x.size();
           	// Previous path's end s and d values 
           	double end_path_s = j[1]["end_path_s"];
           	double end_path_d = j[1]["end_path_d"];
 
           	// Sensor Fusion Data, a list of all other cars on the same side of the road.
           	auto sensor_fusion = j[1]["sensor_fusion"];
+
+    
+            // start at 0 mph
+            //double ref_vel = 49.5; //mph
+
+            // Slow down for car
+            if(prev_size > 0){
+              car_s = end_path_s;
+            }
+
+            bool too_close = false;
+
+            // find ref_v to use
+            for(int i=0; i < sensor_fusion.size(); i++){
+
+              // car is in my lane
+              float d = sensor_fusion[i][6];
+              if(d < (2+4*lane+2) && d> (2+4*lane-2)){
+                double vx = sensor_fusion[i][3];
+                double vy = sensor_fusion[i][4];
+                double check_speed = sqrt(vx*vx + vy*vy);
+                double check_car_s = sensor_fusion[i][5];
+
+                // project s value to end of previous path
+                // prev_size*0.02 = time until end of previous path
+                check_car_s += (double)prev_size*0.02*check_speed;
+
+                // Too close to forward car
+                if((check_car_s > car_s) && ((check_car_s - car_s) < 30)){
+                  //ref_vel = 29.5; 
+                  too_close = true;
+                  if(lane > 0){
+                    lane = 0;
+                  } //end lane change
+
+                } //end too close
+              } //end in my lane
+            } //end for loop around sensed vehicles
+
+
+            if(too_close){
+              ref_vel -= 2*0.224;
+            } else if(ref_vel < 49.5){
+              ref_vel += 2*0.224;
+            }
+
 
           	json msgJson;
 
@@ -240,6 +294,143 @@ int main() {
 
 
           	// TODO: define a path made up of (x,y) points that the car will visit sequentially every .02 seconds
+
+            // Vector of sparse "anchor" points to which a 
+            // smooth spline will be fit
+            vector<double> ptsx;
+            vector<double> ptsy;
+
+            double ref_x = car_x;
+            double ref_y = car_y;
+            double ref_yaw = deg2rad(car_yaw);
+
+            // Create first 2 points based on previous cars position and
+            // yaw in order to achieve smooth transition
+
+            // If previous size is almost empty,
+            // create first two points as a line in the same
+            // direction as the current path
+            if(prev_size < 2)
+            {
+
+              // Estimate previous position based on car's current
+              double prev_car_x = car_x - cos(car_yaw);
+              double prev_car_y = car_y - sin(car_yaw);
+
+
+              ptsx.push_back(prev_car_x);
+              ptsx.push_back(car_x);
+
+              ptsy.push_back(prev_car_y);
+              ptsy.push_back(car_y);
+            }
+            else
+            // Since there are 2 or more previous points,
+            // use the last 2 as the first two points
+            {
+              ref_x = previous_path_x[prev_size-1];
+              ref_y = previous_path_y[prev_size-1];
+
+              double ref_x_prev = previous_path_x[prev_size-2];
+              double ref_y_prev = previous_path_y[prev_size-2];
+            
+              ref_yaw = atan2(ref_y-ref_y_prev,ref_x-ref_x_prev);
+
+              ptsx.push_back(ref_x_prev);
+              ptsx.push_back(ref_x);
+
+              ptsy.push_back(ref_y_prev);
+              ptsy.push_back(ref_y);
+
+            }
+
+            // Add rest of sparse points, 30 meters apart
+
+
+            vector<double> next_wp0 = getXY(car_s+30,(2+4*lane),map_waypoints_s,map_waypoints_x,map_waypoints_y);
+            vector<double> next_wp1 = getXY(car_s+60,(2+4*lane),map_waypoints_s,map_waypoints_x,map_waypoints_y);
+            vector<double> next_wp2 = getXY(car_s+90,(2+4*lane),map_waypoints_s,map_waypoints_x,map_waypoints_y);
+
+            // Push back these rest of sparse points
+            ptsx.push_back(next_wp0[0]);
+            ptsx.push_back(next_wp1[0]);
+            ptsx.push_back(next_wp2[0]);
+
+            ptsy.push_back(next_wp0[1]);
+            ptsy.push_back(next_wp1[1]);
+            ptsy.push_back(next_wp2[1]);
+            
+            // Transform to car reference frame for all points
+            // In other words, put car at 0,0 with yaw = 0
+            for(int i = 0; i < ptsx.size(); i++)
+            {
+              // Translate
+              double shift_x = ptsx[i]-ref_x;
+              double shift_y = ptsy[i]-ref_y;
+
+              // Rotate
+              ptsx[i] = (shift_x*cos(-ref_yaw)-shift_y*sin(-ref_yaw));
+              ptsy[i] = (shift_x*sin(-ref_yaw)+shift_y*cos(0-ref_yaw));
+            }
+
+
+            // Create spline
+            tk::spline s;
+            
+            // Put the points (now in local coords) into spline
+            s.set_points(ptsx,ptsy);
+            
+
+            // Sart by pushing all previous points
+            for(int i=0; i< prev_size; i++)
+            {
+              next_x_vals.push_back(previous_path_x[i]);
+              next_y_vals.push_back(previous_path_y[i]);
+            }
+
+
+            // Calculate how to break up spline points to get
+            // the reference velocity
+            double target_x = 30.0; // "horizon"
+            double target_y = s(target_x);
+            double target_dist = sqrt(target_x*target_x + target_y*target_y);
+
+            // Have a reference velocity to target
+            //double ref_vel = 49.5; //mph
+            double N = target_dist/(0.02*ref_vel/2.24);
+
+            // The amount to move X for each dot
+            double x_inc = target_x/N;
+
+
+            double x_add_on = 0;
+            
+            // Fill in other points using spline to get to 50 points
+            for(int i=1; i <= 50-prev_size; i++)
+            {
+              double x_point = x_add_on + x_inc;
+              double y_point = s(x_point);
+   
+              x_add_on = x_point;
+
+              // Transform back to map coordinates
+              double x_ref = x_point;
+              double y_ref = y_point;
+
+              x_point = x_ref*cos(ref_yaw)-y_ref*sin(ref_yaw);
+              y_point = x_ref*sin(ref_yaw)+y_ref*cos(ref_yaw);
+
+              x_point += ref_x;
+              y_point += ref_y;
+
+              // Push back to send to car
+              next_x_vals.push_back(x_point);
+              next_y_vals.push_back(y_point);
+                
+            }
+
+            // END
+
           	msgJson["next_x"] = next_x_vals;
           	msgJson["next_y"] = next_y_vals;
 
@@ -290,83 +481,5 @@ int main() {
   }
   h.run();
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
