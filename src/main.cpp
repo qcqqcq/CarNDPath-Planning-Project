@@ -165,28 +165,38 @@ vector<double> getXY(double s, double d, vector<double> maps_s, vector<double> m
 // Custom functions
 //
 
-// Change lane
+// Checks that a lane change is valid and that a recent lane change
+// has not occured recently.  Returns either the new lane, if accepted,
+// if the current lane, if lane change is rejected.
+// previous_s is the s value at the last accepted lane change
 int ChangeLane(int current_lane, int new_lane, double current_s, double* previous_s)
 {
 
+  // Reject if new lane would be valid
   if( (new_lane <0) || (new_lane > 2) ){
+    cout << "reject lane change" << endl;
     cout << "Invalid New Lane" << endl;
     cout << new_lane << endl;
     return current_lane;
   }
 
-  // Only change lanes if been on current lane for 30 meters
-  //if( (current_s - *previous_s) < 0 ){
-  //  current_s += 6945.554;
-  //}
+  // Only change lanes if been on current lane for some meters
   double traveled = current_s - *previous_s;
-  if( (traveled) > 100 || (traveled < 0) ){
-    cout << "Change Lane!" << endl;
+  double min_traveled = 100; //meters
+  if( (traveled) > min_traveled || (traveled < 0) ){
+    // Debug output
+    cout << endl << "Change Lane!" << endl;
     cout << new_lane << endl;
+
+    // Set previous s value as the current one
     *previous_s = current_s;
     return new_lane;
+
+  // Reject if changed lanes too recently
   }else{
-    cout << "refuse lane change" << endl;
+    // Debug output
+    cout << "reject lane change" << endl;
+    cout << "too soon since last" << endl;
     cout << traveled << endl;
     return current_lane;
   }
@@ -274,45 +284,48 @@ int main() {
           	double end_path_s = j[1]["end_path_s"];
           	double end_path_d = j[1]["end_path_d"];
 
-          	// Sensor Fusion Data, a list of all other cars on the same side of the road.
-          	auto sensor_fusion = j[1]["sensor_fusion"];
-
-    
-
-            // Slow down for car
             if(prev_size > 0){
               car_s = end_path_s;
             }
+
 
 
             //
             // Sensor fusion to access neighboring cars
             //
 
+            // In the logic below, lanes are:
+            // lane 0: left lane
+            // lane 1: middle lane
+            // lane 2: right lane
+            
+
+          	auto sensor_fusion = j[1]["sensor_fusion"];
+
             // Initial states
             bool too_close = false;
             double headway = 10;
-            //bool car_to_left = false;
-            //bool car_to_right = false;
 
+            // Costs for making lane change decisions
             double cost = 0;
             double left_cost = 0;
             double stay_cost = -0.01;
             double right_cost = 0;
 
-            // Tunable parameters
+            // Tunable parameters for calculating costs
             double front_char_hw = 1.5;
             double rear_char_gap = 0.25;
             double gap_weight = 1;
 
+            // Costs of moving outside track is extremely hi
             if( lane == 0){
               left_cost = 1000;
             }else if (lane == 2){
               right_cost = 1000;
             }
 
-            
 
+            // Iterate over observed neighbor cars
             // i is the index of one neighbor car
             for(int i=0; i < sensor_fusion.size(); i++){
 
@@ -324,28 +337,23 @@ int main() {
               double check_speed = sqrt(vx*vx + vy*vy);
 
               // project s value to end of previous path
-              // prev_size*0.02 = time until end of previous path
+              // prev_size*0.02 is time until end of previous path
               check_car_s += (double)prev_size*0.02*check_speed;
 
-              // Gap between ego car and forward cars
+              // Gap between ego car and forward cars in meters
               double gap = check_car_s - car_s;
-              headway = gap / car_mps;
               if( gap < -400){
                 gap = -400;
               }
+
+              // headway is gap in seconds
+              headway = gap / car_mps;
             
 
-              // In the logic below, lanes are:
-              // lane 0: left lane
-              // lane 1: middle lane
-              // lane 2: right lane
-            
-              // Car on the left
-              //if(lane != 0){
+              // Rules for cars on the left
               if(d < (4*lane) && d> (4*(lane-1))){
-                // Car is close according to s distance
 
-                // car in front
+                // If car is in front
                 if (headway >= 0){
                   cost = gap_weight*exp(-headway/front_char_hw);
                   if (cost > left_cost){
@@ -354,7 +362,8 @@ int main() {
                   //cout << "left cost" << endl;
                   //cout << headway << endl;
                   //cout << left_cost << endl;
-                // car behind, do not cut off
+
+                // If car behind, do not cut off
                 } else if (gap < 0){
                   cost = gap_weight*exp(headway/rear_char_gap);
                   if (cost > left_cost){
@@ -364,26 +373,19 @@ int main() {
                   //cout << headway << endl;
                   //cout << left_cost << endl;
                 }
-                //if(abs(gap) < neigh_gap ){
-                  //car_to_left = true;
-                  //cout << "Car to left" << endl;
-                  //cout << (check_car_s - car_s) << endl;
-                //}
-              }
-              //}
+              } //end car on left
               
+
               // Check for car to the right 
-              //if(lane != 2){
-              // Car is in right lane
               if(d > (4*(lane+1)) && d < (4*(lane+2))){
-                // Car is close according to s distance
-                // car in front
+
+                // If car is in front
                 if (gap >= 0){
                   cost = gap_weight*exp(-headway/front_char_hw);
                   if (cost > right_cost){
                     right_cost = cost;
                   }
-                // car behind, do not cut off
+                // If car is behind, do not cut off
                 } else if (gap < 0){
                   cost = gap_weight*exp(headway/rear_char_gap);
                   if (cost > right_cost){
@@ -391,20 +393,13 @@ int main() {
                   }
                 
                 }
-                //if(abs(check_car_s - car_s) < neigh_gap ){
-                  //car_to_right = true;
-                  //cout << "Car to right" << endl;
-                  //cout << (check_car_s - car_s) << endl;
-                //}
-              }
-              //}
+              } // end car on right
 
 
               // Check car in current lane
               if( d < (4*(lane+1)) && d > (4*lane) ){
 
-                // Too close to forward car
-                //double headway = (check_car_s - car_s) / car_mps;
+                // If car is in front
                 if (gap >= 0){
                   cost = gap_weight*exp(-headway/front_char_hw);
                   if (cost > stay_cost){
@@ -416,94 +411,50 @@ int main() {
                   //cout << "HW of forward veh" << endl;
                   //cout << headway << endl;
                 }
-                // car behind, do not cut off
-                //if((check_car_s > car_s) && (headway < 1.5)){
-                  //ref_vel = 29.5; 
-                 // too_close = true;
-                  
-                  // If in lane 0 and no car on the right,
-                  // move to middle lane
               } //end car in current lane
 
 
-                  /*
-                  if( (lane == 0) && ~car_to_right ){
-                    lane = ChangeLane(lane,1,car_s,&previous_s);
-                    //lane = 1;
-                  }
-
-                  // If in lane 2 and no car on the left,
-                  // move to middle lane
-                  else if((lane ==2) && ~car_to_left){
-                    lane = ChangeLane(lane,1,car_s,&previous_s);
-                    //lane = 1;
-                  }
-
-                  // If in lane 1, the middle lane
-                  // A decision needs to be made either
-                  // change left or right
-                  else if(lane ==1){
-
-                    // if no car on left, move left
-                    if(~car_to_left){
-                      lane = ChangeLane(lane,0,car_s,&previous_s);
-                      //lane = 0;
-
-                    // if no car on right, move right
-                    }else if(~car_to_right){
-                      lane = ChangeLane(lane,2,car_s,&previous_s);
-                      //lane = 2;
-
-                    // If cars in both sides, just stay
-                    }else{
-                      cout << "Stay in lane" << endl;
-                      cout << car_to_left << endl;
-                      cout << car_to_right << endl;
-                    }
-                  }
-                    // add logic to choose lane
-
-                } //end too close
-                */
-              //} //end in my lane
             } //end for loop around sensed vehicles
 
-            // 
+
 
             // Take action due to too close
             if(too_close){
-              ref_vel -= 0.7;
+              // Tried decreasing speed according to headway but
+              // had issues exceeding max jerk, so just kept a constant
+              // decrement value
               //ref_vel -= 0.7*exp(headway);
-              cout << "too close" << endl;
-              cout << left_cost << endl;
-              cout << stay_cost << endl;
-              cout << right_cost << endl;
+              ref_vel -= 0.7;
+              //cout << "too close" << endl;
+              //cout << left_cost << endl;
+              //cout << stay_cost << endl;
+              //cout << right_cost << endl;
 
 
-            // Move to lowest cost lane
+              // Move to lowest cost lane
 
-            // Move left
-            if( (left_cost < stay_cost) && (left_cost < right_cost) ){
-              lane = ChangeLane(lane,lane-1,car_s,&previous_s);
-              cout << "move left" << endl;
-              cout << left_cost << endl;
-              cout << stay_cost << endl;
-              cout << right_cost << endl;
+              // Move left
+              if( (left_cost < stay_cost) && (left_cost < right_cost) ){
+                lane = ChangeLane(lane,lane-1,car_s,&previous_s);
+                cout << "move left" << endl;
+                cout << left_cost << endl;
+                cout << stay_cost << endl;
+                cout << right_cost << endl;
 
-            // Move right
-            }else if( (right_cost < stay_cost) && (right_cost < left_cost)){
-              lane = ChangeLane(lane,lane+1,car_s,&previous_s);
-              cout << "move right" << endl;
-              cout << left_cost << endl;
-              cout << stay_cost << endl;
-              cout << right_cost << endl;
-            }
+              // Move right
+              }else if( (right_cost < stay_cost) && (right_cost < left_cost)){
+                lane = ChangeLane(lane,lane+1,car_s,&previous_s);
+                cout << "move right" << endl;
+                cout << left_cost << endl;
+                cout << stay_cost << endl;
+                cout << right_cost << endl;
+              }
 
 
-            // Not too close to speed up
+            // Not too close so speed up
             } else if(ref_vel < 49){
               ref_vel += 0.7;
-            }
+            } // end of change speed
 
 
 
@@ -513,7 +464,7 @@ int main() {
           	vector<double> next_y_vals;
 
 
-          	// TODO: define a path made up of (x,y) points that the car will visit sequentially every .02 seconds
+          	// define a path made up of (x,y) points that the car will visit sequentially every .02 seconds
 
             // Vector of sparse "anchor" points to which a 
             // smooth spline will be fit
