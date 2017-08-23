@@ -160,6 +160,40 @@ vector<double> getXY(double s, double d, vector<double> maps_s, vector<double> m
 
 }
 
+
+//
+// Custom functions
+//
+
+// Change lane
+int ChangeLane(int current_lane, int new_lane, double current_s, double* previous_s)
+{
+
+  if( (new_lane <0) || (new_lane > 2) ){
+    cout << "Invalid New Lane" << endl;
+    cout << new_lane << endl;
+    return current_lane;
+  }
+
+  // Only change lanes if been on current lane for 30 meters
+  //if( (current_s - *previous_s) < 0 ){
+  //  current_s += 6945.554;
+  //}
+  double traveled = current_s - *previous_s;
+  if( (traveled) > 100 || (traveled < 0) ){
+    cout << "Change Lane!" << endl;
+    cout << new_lane << endl;
+    *previous_s = current_s;
+    return new_lane;
+  }else{
+    cout << "refuse lane change" << endl;
+    cout << traveled << endl;
+    return current_lane;
+  }
+}
+
+
+
 int main() {
 
   uWS::Hub h;
@@ -202,8 +236,9 @@ int main() {
   // Vehicle initial states
   double ref_vel = 0; //mph
   int lane = 1;
+  double previous_s = 0;
 
-  h.onMessage([&lane,&ref_vel,&map_waypoints_x,&map_waypoints_y,&map_waypoints_s,&map_waypoints_dx,&map_waypoints_dy](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
+  h.onMessage([&previous_s,&lane,&ref_vel,&map_waypoints_x,&map_waypoints_y,&map_waypoints_s,&map_waypoints_dx,&map_waypoints_dy](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
                      uWS::OpCode opCode) {
     // "42" at the start of the message means there's a websocket message event.
     // The 4 signifies a websocket message
@@ -229,6 +264,7 @@ int main() {
           	double car_d = j[1]["d"];
           	double car_yaw = j[1]["yaw"];
           	double car_speed = j[1]["speed"];
+          	double car_mps = car_speed * 0.44704;
 
           	// Previous path data given to the Planner
           	auto previous_path_x = j[1]["previous_path_x"];
@@ -242,52 +278,233 @@ int main() {
           	auto sensor_fusion = j[1]["sensor_fusion"];
 
     
-            // start at 0 mph
-            //double ref_vel = 49.5; //mph
 
             // Slow down for car
             if(prev_size > 0){
               car_s = end_path_s;
             }
 
-            bool too_close = false;
 
-            // find ref_v to use
+            //
+            // Sensor fusion to access neighboring cars
+            //
+
+            // Initial states
+            bool too_close = false;
+            double headway = 10;
+            //bool car_to_left = false;
+            //bool car_to_right = false;
+
+            double cost = 0;
+            double left_cost = 0;
+            double stay_cost = -0.01;
+            double right_cost = 0;
+
+            // Tunable parameters
+            double front_char_hw = 1.5;
+            double rear_char_gap = 0.25;
+            double gap_weight = 1;
+
+            if( lane == 0){
+              left_cost = 1000;
+            }else if (lane == 2){
+              right_cost = 1000;
+            }
+
+            
+
+            // i is the index of one neighbor car
             for(int i=0; i < sensor_fusion.size(); i++){
 
-              // car is in my lane
+              // d position of neighbor car
               float d = sensor_fusion[i][6];
-              if(d < (2+4*lane+2) && d> (2+4*lane-2)){
-                double vx = sensor_fusion[i][3];
-                double vy = sensor_fusion[i][4];
-                double check_speed = sqrt(vx*vx + vy*vy);
-                double check_car_s = sensor_fusion[i][5];
+              double check_car_s = sensor_fusion[i][5];
+              double vx = sensor_fusion[i][3];
+              double vy = sensor_fusion[i][4];
+              double check_speed = sqrt(vx*vx + vy*vy);
 
-                // project s value to end of previous path
-                // prev_size*0.02 = time until end of previous path
-                check_car_s += (double)prev_size*0.02*check_speed;
+              // project s value to end of previous path
+              // prev_size*0.02 = time until end of previous path
+              check_car_s += (double)prev_size*0.02*check_speed;
+
+              // Gap between ego car and forward cars
+              double gap = check_car_s - car_s;
+              headway = gap / car_mps;
+              if( gap < -400){
+                gap = -400;
+              }
+            
+
+              // In the logic below, lanes are:
+              // lane 0: left lane
+              // lane 1: middle lane
+              // lane 2: right lane
+            
+              // Car on the left
+              //if(lane != 0){
+              if(d < (4*lane) && d> (4*(lane-1))){
+                // Car is close according to s distance
+
+                // car in front
+                if (headway >= 0){
+                  cost = gap_weight*exp(-headway/front_char_hw);
+                  if (cost > left_cost){
+                    left_cost = cost;
+                  }
+                  //cout << "left cost" << endl;
+                  //cout << headway << endl;
+                  //cout << left_cost << endl;
+                // car behind, do not cut off
+                } else if (gap < 0){
+                  cost = gap_weight*exp(headway/rear_char_gap);
+                  if (cost > left_cost){
+                    left_cost = cost;
+                  }
+                  //cout << "rear veh left cost" << endl;
+                  //cout << headway << endl;
+                  //cout << left_cost << endl;
+                }
+                //if(abs(gap) < neigh_gap ){
+                  //car_to_left = true;
+                  //cout << "Car to left" << endl;
+                  //cout << (check_car_s - car_s) << endl;
+                //}
+              }
+              //}
+              
+              // Check for car to the right 
+              //if(lane != 2){
+              // Car is in right lane
+              if(d > (4*(lane+1)) && d < (4*(lane+2))){
+                // Car is close according to s distance
+                // car in front
+                if (gap >= 0){
+                  cost = gap_weight*exp(-headway/front_char_hw);
+                  if (cost > right_cost){
+                    right_cost = cost;
+                  }
+                // car behind, do not cut off
+                } else if (gap < 0){
+                  cost = gap_weight*exp(headway/rear_char_gap);
+                  if (cost > right_cost){
+                    right_cost = cost;
+                  }
+                
+                }
+                //if(abs(check_car_s - car_s) < neigh_gap ){
+                  //car_to_right = true;
+                  //cout << "Car to right" << endl;
+                  //cout << (check_car_s - car_s) << endl;
+                //}
+              }
+              //}
+
+
+              // Check car in current lane
+              if( d < (4*(lane+1)) && d > (4*lane) ){
 
                 // Too close to forward car
-                if((check_car_s > car_s) && ((check_car_s - car_s) < 30)){
+                //double headway = (check_car_s - car_s) / car_mps;
+                if (gap >= 0){
+                  cost = gap_weight*exp(-headway/front_char_hw);
+                  if (cost > stay_cost){
+                    stay_cost = cost;
+                  }
+                  if(headway <= 1.3){
+                    too_close = true;
+                  }
+                  //cout << "HW of forward veh" << endl;
+                  //cout << headway << endl;
+                }
+                // car behind, do not cut off
+                //if((check_car_s > car_s) && (headway < 1.5)){
                   //ref_vel = 29.5; 
-                  too_close = true;
-                  if(lane == 0 || lane == 2){
-                    lane = 1;
-                  } else{
-                    lane = 0;
+                 // too_close = true;
+                  
+                  // If in lane 0 and no car on the right,
+                  // move to middle lane
+              } //end car in current lane
+
+
+                  /*
+                  if( (lane == 0) && ~car_to_right ){
+                    lane = ChangeLane(lane,1,car_s,&previous_s);
+                    //lane = 1;
+                  }
+
+                  // If in lane 2 and no car on the left,
+                  // move to middle lane
+                  else if((lane ==2) && ~car_to_left){
+                    lane = ChangeLane(lane,1,car_s,&previous_s);
+                    //lane = 1;
+                  }
+
+                  // If in lane 1, the middle lane
+                  // A decision needs to be made either
+                  // change left or right
+                  else if(lane ==1){
+
+                    // if no car on left, move left
+                    if(~car_to_left){
+                      lane = ChangeLane(lane,0,car_s,&previous_s);
+                      //lane = 0;
+
+                    // if no car on right, move right
+                    }else if(~car_to_right){
+                      lane = ChangeLane(lane,2,car_s,&previous_s);
+                      //lane = 2;
+
+                    // If cars in both sides, just stay
+                    }else{
+                      cout << "Stay in lane" << endl;
+                      cout << car_to_left << endl;
+                      cout << car_to_right << endl;
+                    }
+                  }
                     // add logic to choose lane
 
-                  }
                 } //end too close
-              } //end in my lane
+                */
+              //} //end in my lane
             } //end for loop around sensed vehicles
 
+            // 
 
+            // Take action due to too close
             if(too_close){
-              ref_vel -= 2*0.224;
-            } else if(ref_vel < 49.5){
-              ref_vel += 2*0.224;
+              ref_vel -= 0.7;
+              //ref_vel -= 0.7*exp(headway);
+              cout << "too close" << endl;
+              cout << left_cost << endl;
+              cout << stay_cost << endl;
+              cout << right_cost << endl;
+
+
+            // Move to lowest cost lane
+
+            // Move left
+            if( (left_cost < stay_cost) && (left_cost < right_cost) ){
+              lane = ChangeLane(lane,lane-1,car_s,&previous_s);
+              cout << "move left" << endl;
+              cout << left_cost << endl;
+              cout << stay_cost << endl;
+              cout << right_cost << endl;
+
+            // Move right
+            }else if( (right_cost < stay_cost) && (right_cost < left_cost)){
+              lane = ChangeLane(lane,lane+1,car_s,&previous_s);
+              cout << "move right" << endl;
+              cout << left_cost << endl;
+              cout << stay_cost << endl;
+              cout << right_cost << endl;
             }
+
+
+            // Not too close to speed up
+            } else if(ref_vel < 49){
+              ref_vel += 0.7;
+            }
+
 
 
           	json msgJson;
