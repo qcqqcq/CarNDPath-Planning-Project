@@ -9,28 +9,37 @@ In this project your goal is to safely navigate around a virtual highway with ot
 This simple implementation is quite bare bones, yet is able to complete more than 5 miles without incident
 
 The car drives according to the speed limit of 50MPH using simple logic in lines ~455:
+
     } else if(ref_vel < 49){
       ref_vel += 0.7;
+
 The 0.7 value was chosen as to not exceed man jerk and acceleration
 
 The car does not have collisions because it changes lanes when getting to a "too close" state. Too close is defined in lines ~408:
+
     if(headway <= 1.3){
       too_close = true;
 Where headway (with units of seconds) is the distance to forward vehicle within the same lane (in meters) devided by the ego vehicle's speed (in meters per second)
 
 The lane changes occur according to a cost function scheme.  Lines ~311 define the 3 costs:
+
     double left_cost = 0;
     double stay_cost = -0.01;
     double right_cost = 0;
+
 These are the costs to change to the left/right lane, relative to the current lane, or stay in the current lane.  The initial value of stay cost below zero gives the car a slight preference to stay in the current lane. When the "too close" flag is on, the car will choose the lane according to the lowest cost. Note that speed could have also been modulating using this cost scheme, but the simpler if/then logic of lines ~427 and ~455 worked well enough.
 
 For each cost, first a determination was made to calculate if the other vehicle is in the left, current, or right lane relative to the current lane. The logic for left lane is in line ~354:
+
     // Rules for cars on the left
     if(d < (4*lane) && d> (4*(lane-1))){
+
 Here, lane is the current lane.  4 is the width of each lane in meters.
 
 The appropriate cost if then formulated using an expoential decay scheme in line ~358:
+
     cost = gap_weight*exp(-headway/front_char_hw);
+    
 The headway is normalized by a "characteristic headway" and the exponent is weighted by a gap weight.
 
 Lines ~436 show the logic for choosing the lane associated with the minimum cost. A lane change is declared using the ChangeLane helper function, which returns the number of the new lane (0 is left lane, 1 is middle, 2 is right lane).  ChangeLane can also reject the lane change request and return the current lane. 
